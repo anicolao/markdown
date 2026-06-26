@@ -90,7 +90,7 @@ EOF
               cache_dir=
               cache=1
               width=1100
-              page_size="Letter"
+              page_size="8.5in 11in"
               body_max_width=920
               title=
               input=
@@ -142,7 +142,7 @@ EOF
                     shift 2
                     ;;
                   --landscape)
-                    page_size="Letter landscape"
+                    page_size="11in 8.5in"
                     body_max_width=1260
                     shift
                     ;;
@@ -390,7 +390,7 @@ EOF
               md_hash=''${md_hash_line%% *}
               key_file=$tmp/cache-key
               {
-                echo "mdkitty-cache-v5"
+                echo "mdkitty-cache-v6"
                 echo "markdown=$md_hash"
                 echo "resource_path=$resource_path"
                 echo "title=$title"
@@ -448,7 +448,7 @@ EOF
                     done
               }
 
-              if [ "$cache" -eq 1 ] && [ -s "$cache_image" ]; then
+              if [ "$cache" -eq 1 ] && [ -s "$cache_pdf" ] && [ -s "$cache_image" ]; then
                 html=$cache_html
                 pdf=$cache_pdf
                 image=$cache_image
@@ -473,6 +473,19 @@ EOF
                 cp "$pdf" "$out_dir/document.pdf"
                 cp "$image" "$out_dir/document.png"
               fi
+
+              open_pdf() {
+                local opened_pdf
+                if [ "$cache" -eq 1 ]; then
+                  opened_pdf=$pdf
+                elif [ -n "$out_dir" ]; then
+                  opened_pdf=$out_dir/document.pdf
+                else
+                  opened_pdf=$(mktemp "''${TMPDIR:-/tmp}/mdkitty.XXXXXX.pdf")
+                  cp "$pdf" "$opened_pdf"
+                fi
+                open "$opened_pdf"
+              }
 
               detect_window_size() {
                 local rows_cols pixels rows cols px_w px_h
@@ -674,7 +687,7 @@ EOF
                   fi
                   ;;
                 pdf)
-                  open "$pdf"
+                  open_pdf
                   if [ -n "$out_dir" ]; then
                     echo "Saved render artifacts to $out_dir" >&2
                   fi
