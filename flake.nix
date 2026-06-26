@@ -72,7 +72,8 @@ Options:
   --cache-dir DIR  cache directory, default: $XDG_CACHE_HOME/mdkitty
   --no-cache       render without reading or writing the cache
   --width PX       output image width, default: 1100
-  --title TITLE    document title used by Pandoc
+  --landscape      format the document on landscape Letter pages
+  --title TITLE    HTML page title used by Pandoc
   -h, --help       show this help
 
 Examples:
@@ -88,6 +89,8 @@ EOF
               cache_dir=
               cache=1
               width=1100
+              page_size="Letter"
+              body_max_width=920
               title=
               input=
 
@@ -132,6 +135,11 @@ EOF
                     fi
                     width=$2
                     shift 2
+                    ;;
+                  --landscape)
+                    page_size="Letter landscape"
+                    body_max_width=1260
+                    shift
                     ;;
                   --title)
                     if [ "$#" -lt 2 ]; then
@@ -198,9 +206,9 @@ EOF
               html=$tmp/markdown.html
               image=$tmp/markdown.png
 
-cat > "$css" <<'EOF'
+cat > "$css" <<EOF
 @page {
-  size: Letter;
+  size: $page_size;
   margin: 0;
 }
 
@@ -222,7 +230,7 @@ body {
   box-sizing: border-box;
   color: #24292f;
   margin: 0 auto;
-  max-width: 920px;
+  max-width: ''${body_max_width}px;
   min-height: 100vh;
   padding: 48px 56px 64px;
   width: 100%;
@@ -376,11 +384,13 @@ EOF
               md_hash=''${md_hash_line%% *}
               key_file=$tmp/cache-key
               {
-                echo "mdkitty-cache-v3"
+                echo "mdkitty-cache-v4"
                 echo "markdown=$md_hash"
                 echo "resource_path=$resource_path"
                 echo "title=$title"
                 echo "width=$width"
+                echo "page_size=$page_size"
+                echo "body_max_width=$body_max_width"
               } > "$key_file"
               cache_key_line=$(md5sum "$key_file")
               cache_key=''${cache_key_line%% *}
@@ -399,7 +409,7 @@ EOF
                   --standalone \
                   --embed-resources \
                   --mathml \
-                  --metadata "title=$title" \
+                  --metadata "pagetitle=$title" \
                   --resource-path="$resource_path:$(pwd)" \
                   --highlight-style=tango \
                   --css "$css" \
