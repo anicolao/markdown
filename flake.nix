@@ -67,8 +67,9 @@ Render Markdown into one continuous image and display it with Kitty graphics.
 Options:
   --pager          open the Kitty graphics stream in less -r, default
   --no-pager       render directly into terminal scrollback
+  --pdf            open the rendered PDF with open
   --stdout         write Kitty graphics protocol to stdout
-  --out-dir DIR    copy the rendered HTML and PNG to DIR
+  --out-dir DIR    copy the rendered HTML, PDF, and PNG to DIR
   --cache-dir DIR  cache directory, default: $XDG_CACHE_HOME/mdkitty
   --no-cache       render without reading or writing the cache
   --width PX       output image width, default: 1100
@@ -102,6 +103,10 @@ EOF
                     ;;
                   --no-pager|--view)
                     mode=view
+                    shift
+                    ;;
+                  --pdf)
+                    mode=pdf
                     shift
                     ;;
                   --stdout)
@@ -204,6 +209,7 @@ EOF
 
               css=$tmp/markdown.css
               html=$tmp/markdown.html
+              pdf=$tmp/markdown.pdf
               image=$tmp/markdown.png
 
 cat > "$css" <<EOF
@@ -384,7 +390,7 @@ EOF
               md_hash=''${md_hash_line%% *}
               key_file=$tmp/cache-key
               {
-                echo "mdkitty-cache-v4"
+                echo "mdkitty-cache-v5"
                 echo "markdown=$md_hash"
                 echo "resource_path=$resource_path"
                 echo "title=$title"
@@ -396,11 +402,11 @@ EOF
               cache_key=''${cache_key_line%% *}
               cache_entry=$cache_dir/$cache_key
               cache_html=$cache_entry/document.html
+              cache_pdf=$cache_entry/document.pdf
               cache_image=$cache_entry/document.png
 
               render_document() {
-                local pdf page_prefix
-                pdf=$tmp/markdown.pdf
+                local page_prefix
                 page_prefix=$tmp/page
 
                 pandoc \
@@ -444,16 +450,19 @@ EOF
 
               if [ "$cache" -eq 1 ] && [ -s "$cache_image" ]; then
                 html=$cache_html
+                pdf=$cache_pdf
                 image=$cache_image
-                touch "$cache_entry" "$cache_image" 2>/dev/null || true
+                touch "$cache_entry" "$cache_pdf" "$cache_image" 2>/dev/null || true
               else
                 render_document
                 if [ "$cache" -eq 1 ]; then
                   mkdir -p "$cache_entry"
                   cp "$html" "$cache_html"
+                  cp "$pdf" "$cache_pdf"
                   cp "$image" "$cache_image"
                   prune_cache
                   html=$cache_html
+                  pdf=$cache_pdf
                   image=$cache_image
                 fi
               fi
@@ -461,6 +470,7 @@ EOF
               if [ -n "$out_dir" ]; then
                 mkdir -p "$out_dir"
                 cp "$html" "$out_dir/document.html"
+                cp "$pdf" "$out_dir/document.pdf"
                 cp "$image" "$out_dir/document.png"
               fi
 
@@ -659,6 +669,12 @@ EOF
                       cp "$tmp_transcript" "$transcript"
                     fi
                   fi
+                  if [ -n "$out_dir" ]; then
+                    echo "Saved render artifacts to $out_dir" >&2
+                  fi
+                  ;;
+                pdf)
+                  open "$pdf"
                   if [ -n "$out_dir" ]; then
                     echo "Saved render artifacts to $out_dir" >&2
                   fi
