@@ -59,27 +59,31 @@
 
               usage() {
                 cat <<'EOF'
-Usage: mdkitty [options] FILE.md
+Usage: mdkitty [options] FILE.md|FILE.pdf
        mdkitty [options] -
 
-Render Markdown into one continuous image and display it with Kitty graphics.
+Render Markdown or PDF and display it with Kitty graphics.
 
 Options:
   --pager          open the Kitty graphics stream in less -r, default
   --no-pager       render directly into terminal scrollback
+  --pdf            open the rendered PDF with open
   --stdout         write Kitty graphics protocol to stdout
-  --out-dir DIR    copy the rendered HTML and PNG to DIR
+  --out-dir DIR    copy the rendered PDF and PNG (plus HTML for Markdown) to DIR
   --cache-dir DIR  cache directory, default: $XDG_CACHE_HOME/mdkitty
   --no-cache       render without reading or writing the cache
   --width PX       output image width, default: 1100
-  --title TITLE    document title used by Pandoc
+  --landscape      format the document on landscape Letter pages
+  --title TITLE    HTML page title used by Pandoc
   -h, --help       show this help
 
 Examples:
   nix run . -- README.md
+  nix run . -- document.pdf
   nix run . -- --no-pager notes.md
   nix run . -- --out-dir render notes.md
   cat notes.md | nix run . -- -
+  cat document.pdf | nix run . -- -
 EOF
               }
 
@@ -88,6 +92,8 @@ EOF
               cache_dir=
               cache=1
               width=1100
+              page_size="8.5in 11in"
+              body_max_width=920
               title=
               input=
 
@@ -99,6 +105,10 @@ EOF
                     ;;
                   --no-pager|--view)
                     mode=view
+                    shift
+                    ;;
+                  --pdf)
+                    mode=pdf
                     shift
                     ;;
                   --stdout)
@@ -132,6 +142,11 @@ EOF
                     fi
                     width=$2
                     shift 2
+                    ;;
+                  --landscape)
+                    page_size="11in 8.5in"
+                    body_max_width=1260
+                    shift
                     ;;
                   --title)
                     if [ "$#" -lt 2 ]; then
@@ -196,11 +211,12 @@ EOF
 
               css=$tmp/markdown.css
               html=$tmp/markdown.html
+              pdf=$tmp/markdown.pdf
               image=$tmp/markdown.png
 
-cat > "$css" <<'EOF'
+cat > "$css" <<EOF
 @page {
-  size: Letter;
+  size: $page_size;
   margin: 0;
 }
 
@@ -222,7 +238,7 @@ body {
   box-sizing: border-box;
   color: #24292f;
   margin: 0 auto;
-  max-width: 920px;
+  max-width: ''${body_max_width}px;
   min-height: 100vh;
   padding: 48px 56px 64px;
   width: 100%;
@@ -368,6 +384,12 @@ EOF
                 fi
               fi
 
+              if [ "$(head -c 5 "$md")" = '%PDF-' ]; then
+                input_type=pdf
+              else
+                input_type=markdown
+              fi
+
               if [ -z "$cache_dir" ]; then
                 cache_dir="''${XDG_CACHE_HOME:-''${HOME:-$tmp/.home}/.cache}/mdkitty"
               fi
@@ -376,46 +398,72 @@ EOF
               md_hash=''${md_hash_line%% *}
               key_file=$tmp/cache-key
               {
-                echo "mdkitty-cache-v3"
-                echo "markdown=$md_hash"
-                echo "resource_path=$resource_path"
-                echo "title=$title"
+                echo "mdkitty-cache-v8"
+                echo "input_type=$input_type"
+                echo "input=$md_hash"
                 echo "width=$width"
+                if [ "$input_type" = markdown ]; then
+                  echo "resource_path=$resource_path"
+                  echo "title=$title"
+                  echo "page_size=$page_size"
+                  echo "body_max_width=$body_max_width"
+                fi
               } > "$key_file"
               cache_key_line=$(md5sum "$key_file")
               cache_key=''${cache_key_line%% *}
               cache_entry=$cache_dir/$cache_key
               cache_html=$cache_entry/document.html
+              cache_pdf=$cache_entry/document.pdf
               cache_image=$cache_entry/document.png
+              cache_pages=$cache_entry/pages
+              pages_dir=$tmp/pages
+              pages=()
 
               render_document() {
-                local pdf page_prefix
-                pdf=$tmp/markdown.pdf
-                page_prefix=$tmp/page
+                local page_prefix
 
-                pandoc \
-                  --from markdown+smart \
-                  --to html5 \
-                  --standalone \
-                  --embed-resources \
-                  --mathml \
-                  --metadata "title=$title" \
-                  --resource-path="$resource_path:$(pwd)" \
-                  --highlight-style=tango \
-                  --css "$css" \
-                  --output "$html" \
-                  "$md"
+                if [ "$input_type" = pdf ]; then
+                  cp "$md" "$pdf"
+                  mkdir -p "$pages_dir"
+                  page_prefix=$pages_dir/page
+                  pdftoppm \
+                    -png \
+                    -scale-to-x "$width" \
+                    -scale-to-y -1 \
+                    "$pdf" \
+                    "$page_prefix" \
+                    >/dev/null
 
-                weasyprint --quiet "$html" "$pdf" >/dev/null
-                pdftoppm -png -r 180 "$pdf" "$page_prefix" >/dev/null
+                  mapfile -t pages < <(find "$pages_dir" -maxdepth 1 -name 'page-*.png' -print | sort -V)
+                else
+                  page_prefix=$tmp/page
+                  pandoc \
+                    --from markdown+smart \
+                    --to html5 \
+                    --standalone \
+                    --embed-resources \
+                    --mathml \
+                    --metadata "pagetitle=$title" \
+                    --resource-path="$resource_path:$(pwd)" \
+                    --highlight-style=tango \
+                    --css "$css" \
+                    --output "$html" \
+                    "$md"
 
-                mapfile -t pages < <(find "$tmp" -maxdepth 1 -name 'page-*.png' -print | sort -V)
+                  weasyprint --quiet "$html" "$pdf" >/dev/null
+                  pdftoppm -png -r 180 "$pdf" "$page_prefix" >/dev/null
+
+                  mapfile -t pages < <(find "$tmp" -maxdepth 1 -name 'page-*.png' -print | sort -V)
+                fi
+
                 if [ "''${#pages[@]}" -eq 0 ]; then
                   echo "mdkitty: no pages were rendered" >&2
                   exit 1
                 fi
 
-                magick "''${pages[@]}" -append -resize "$width"x "$image"
+                if [ "$input_type" = markdown ]; then
+                  magick "''${pages[@]}" -append -resize "$width"x "$image"
+                fi
               }
 
               prune_cache() {
@@ -432,27 +480,80 @@ EOF
                     done
               }
 
-              if [ "$cache" -eq 1 ] && [ -s "$cache_image" ]; then
-                html=$cache_html
-                image=$cache_image
-                touch "$cache_entry" "$cache_image" 2>/dev/null || true
+              cache_hit=0
+              if [ "$cache" -eq 1 ]; then
+                if [ "$input_type" = pdf ] \
+                  && [ -s "$cache_pdf" ] \
+                  && [ -e "$cache_pages/.complete" ]; then
+                  mapfile -t pages < <(find "$cache_pages" -maxdepth 1 -name 'page-*.png' -print | sort -V)
+                  if [ "''${#pages[@]}" -gt 0 ]; then
+                    cache_hit=1
+                    pdf=$cache_pdf
+                  fi
+                elif [ "$input_type" = markdown ] \
+                  && [ -s "$cache_html" ] \
+                  && [ -s "$cache_pdf" ] \
+                  && [ -s "$cache_image" ]; then
+                  cache_hit=1
+                  html=$cache_html
+                  pdf=$cache_pdf
+                  image=$cache_image
+                fi
+              fi
+
+              if [ "$cache_hit" -eq 1 ]; then
+                touch "$cache_entry" "$pdf" 2>/dev/null || true
+                if [ "$input_type" = pdf ]; then
+                  touch "''${pages[@]}" 2>/dev/null || true
+                else
+                  touch "$html" "$image" 2>/dev/null || true
+                fi
               else
                 render_document
                 if [ "$cache" -eq 1 ]; then
                   mkdir -p "$cache_entry"
-                  cp "$html" "$cache_html"
-                  cp "$image" "$cache_image"
+                  if [ "$input_type" = markdown ]; then
+                    cp "$html" "$cache_html"
+                    cp "$image" "$cache_image"
+                    html=$cache_html
+                    image=$cache_image
+                  else
+                    mkdir -p "$cache_pages"
+                    cp "''${pages[@]}" "$cache_pages/"
+                    touch "$cache_pages/.complete"
+                    mapfile -t pages < <(find "$cache_pages" -maxdepth 1 -name 'page-*.png' -print | sort -V)
+                  fi
+                  cp "$pdf" "$cache_pdf"
                   prune_cache
-                  html=$cache_html
-                  image=$cache_image
+                  pdf=$cache_pdf
                 fi
               fi
 
               if [ -n "$out_dir" ]; then
                 mkdir -p "$out_dir"
-                cp "$html" "$out_dir/document.html"
-                cp "$image" "$out_dir/document.png"
+                if [ "$input_type" = markdown ]; then
+                  cp "$html" "$out_dir/document.html"
+                  cp "$image" "$out_dir/document.png"
+                elif [ "''${#pages[@]}" -eq 1 ]; then
+                  cp "''${pages[0]}" "$out_dir/document.png"
+                else
+                  magick "''${pages[@]}" -append "$out_dir/document.png"
+                fi
+                cp "$pdf" "$out_dir/document.pdf"
               fi
+
+              open_pdf() {
+                local opened_pdf
+                if [ "$cache" -eq 1 ]; then
+                  opened_pdf=$pdf
+                elif [ -n "$out_dir" ]; then
+                  opened_pdf=$out_dir/document.pdf
+                else
+                  opened_pdf=$(mktemp "''${TMPDIR:-/tmp}/mdkitty.XXXXXX.pdf")
+                  cp "$pdf" "$opened_pdf"
+                fi
+                open "$opened_pdf"
+              }
 
               detect_window_size() {
                 local rows_cols pixels rows cols px_w px_h
@@ -606,16 +707,29 @@ EOF
               }
 
               emit_pager_stream() {
-                split_image_for_pager | while IFS= read -r strip; do
-                  emit_kitty_stream 1 0 "$strip"
-                done
+                if [ "$input_type" = pdf ]; then
+                  emit_kitty_stream 1 1 "''${pages[@]}"
+                else
+                  split_image_for_pager | while IFS= read -r strip; do
+                    emit_kitty_stream 1 0 "$strip"
+                  done
+                fi
+              }
+
+              emit_document_stream() {
+                if [ "$input_type" = pdf ]; then
+                  emit_kitty_stream 0 1 "''${pages[@]}"
+                else
+                  emit_kitty_stream 0 1
+                fi
               }
 
               pager_transcript_cache_path() {
                 local key_file key_line key
                 key_file=$tmp/pager-cache-key
                 {
-                  echo "mdkitty-pager-cache-v1"
+                  echo "mdkitty-pager-cache-v2"
+                  echo "input_type=$input_type"
                   echo "window=$MDKITTY_WINDOW_SIZE"
                   echo "overlap=''${MDKITTY_PAGER_OVERLAP_PX:-0}"
                 } > "$key_file"
@@ -626,7 +740,7 @@ EOF
 
               case "$mode" in
                 view)
-                  emit_kitty_stream 0 1
+                  emit_document_stream
                   if [ -n "$out_dir" ]; then
                     echo "Saved render artifacts to $out_dir" >&2
                   fi
@@ -653,8 +767,14 @@ EOF
                     echo "Saved render artifacts to $out_dir" >&2
                   fi
                   ;;
+                pdf)
+                  open_pdf
+                  if [ -n "$out_dir" ]; then
+                    echo "Saved render artifacts to $out_dir" >&2
+                  fi
+                  ;;
                 stdout)
-                  emit_kitty_stream 0 1
+                  emit_document_stream
                   ;;
               esac
             '';
