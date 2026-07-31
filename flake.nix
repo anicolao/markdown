@@ -59,17 +59,17 @@
 
               usage() {
                 cat <<'EOF'
-Usage: mdkitty [options] FILE.md
+Usage: mdkitty [options] FILE.md|FILE.pdf
        mdkitty [options] -
 
-Render Markdown into one continuous image and display it with Kitty graphics.
+Render Markdown or PDF into one continuous image and display it with Kitty graphics.
 
 Options:
   --pager          open the Kitty graphics stream in less -r, default
   --no-pager       render directly into terminal scrollback
   --pdf            open the rendered PDF with open
   --stdout         write Kitty graphics protocol to stdout
-  --out-dir DIR    copy the rendered HTML, PDF, and PNG to DIR
+  --out-dir DIR    copy the rendered PDF and PNG (plus HTML for Markdown) to DIR
   --cache-dir DIR  cache directory, default: $XDG_CACHE_HOME/mdkitty
   --no-cache       render without reading or writing the cache
   --width PX       output image width, default: 1100
@@ -79,9 +79,11 @@ Options:
 
 Examples:
   nix run . -- README.md
+  nix run . -- document.pdf
   nix run . -- --no-pager notes.md
   nix run . -- --out-dir render notes.md
   cat notes.md | nix run . -- -
+  cat document.pdf | nix run . -- -
 EOF
               }
 
@@ -382,6 +384,12 @@ EOF
                 fi
               fi
 
+              if [ "$(head -c 5 "$md")" = '%PDF-' ]; then
+                input_type=pdf
+              else
+                input_type=markdown
+              fi
+
               if [ -z "$cache_dir" ]; then
                 cache_dir="''${XDG_CACHE_HOME:-''${HOME:-$tmp/.home}/.cache}/mdkitty"
               fi
@@ -390,8 +398,9 @@ EOF
               md_hash=''${md_hash_line%% *}
               key_file=$tmp/cache-key
               {
-                echo "mdkitty-cache-v6"
-                echo "markdown=$md_hash"
+                echo "mdkitty-cache-v7"
+                echo "input_type=$input_type"
+                echo "input=$md_hash"
                 echo "resource_path=$resource_path"
                 echo "title=$title"
                 echo "width=$width"
@@ -409,20 +418,24 @@ EOF
                 local page_prefix
                 page_prefix=$tmp/page
 
-                pandoc \
-                  --from markdown+smart \
-                  --to html5 \
-                  --standalone \
-                  --embed-resources \
-                  --mathml \
-                  --metadata "pagetitle=$title" \
-                  --resource-path="$resource_path:$(pwd)" \
-                  --highlight-style=tango \
-                  --css "$css" \
-                  --output "$html" \
-                  "$md"
+                if [ "$input_type" = pdf ]; then
+                  cp "$md" "$pdf"
+                else
+                  pandoc \
+                    --from markdown+smart \
+                    --to html5 \
+                    --standalone \
+                    --embed-resources \
+                    --mathml \
+                    --metadata "pagetitle=$title" \
+                    --resource-path="$resource_path:$(pwd)" \
+                    --highlight-style=tango \
+                    --css "$css" \
+                    --output "$html" \
+                    "$md"
 
-                weasyprint --quiet "$html" "$pdf" >/dev/null
+                  weasyprint --quiet "$html" "$pdf" >/dev/null
+                fi
                 pdftoppm -png -r 180 "$pdf" "$page_prefix" >/dev/null
 
                 mapfile -t pages < <(find "$tmp" -maxdepth 1 -name 'page-*.png' -print | sort -V)
@@ -448,8 +461,13 @@ EOF
                     done
               }
 
-              if [ "$cache" -eq 1 ] && [ -s "$cache_pdf" ] && [ -s "$cache_image" ]; then
-                html=$cache_html
+              if [ "$cache" -eq 1 ] \
+                && [ -s "$cache_pdf" ] \
+                && [ -s "$cache_image" ] \
+                && { [ "$input_type" = pdf ] || [ -s "$cache_html" ]; }; then
+                if [ "$input_type" = markdown ]; then
+                  html=$cache_html
+                fi
                 pdf=$cache_pdf
                 image=$cache_image
                 touch "$cache_entry" "$cache_pdf" "$cache_image" 2>/dev/null || true
@@ -457,11 +475,13 @@ EOF
                 render_document
                 if [ "$cache" -eq 1 ]; then
                   mkdir -p "$cache_entry"
-                  cp "$html" "$cache_html"
+                  if [ "$input_type" = markdown ]; then
+                    cp "$html" "$cache_html"
+                    html=$cache_html
+                  fi
                   cp "$pdf" "$cache_pdf"
                   cp "$image" "$cache_image"
                   prune_cache
-                  html=$cache_html
                   pdf=$cache_pdf
                   image=$cache_image
                 fi
@@ -469,7 +489,9 @@ EOF
 
               if [ -n "$out_dir" ]; then
                 mkdir -p "$out_dir"
-                cp "$html" "$out_dir/document.html"
+                if [ "$input_type" = markdown ]; then
+                  cp "$html" "$out_dir/document.html"
+                fi
                 cp "$pdf" "$out_dir/document.pdf"
                 cp "$image" "$out_dir/document.png"
               fi
