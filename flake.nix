@@ -62,7 +62,7 @@
 Usage: mdkitty [options] FILE.md|FILE.pdf
        mdkitty [options] -
 
-Render Markdown or PDF into one continuous image and display it with Kitty graphics.
+Render Markdown or PDF and display it with Kitty graphics.
 
 Options:
   --pager          open the Kitty graphics stream in less -r, default
@@ -398,14 +398,16 @@ EOF
               md_hash=''${md_hash_line%% *}
               key_file=$tmp/cache-key
               {
-                echo "mdkitty-cache-v7"
+                echo "mdkitty-cache-v8"
                 echo "input_type=$input_type"
                 echo "input=$md_hash"
-                echo "resource_path=$resource_path"
-                echo "title=$title"
                 echo "width=$width"
-                echo "page_size=$page_size"
-                echo "body_max_width=$body_max_width"
+                if [ "$input_type" = markdown ]; then
+                  echo "resource_path=$resource_path"
+                  echo "title=$title"
+                  echo "page_size=$page_size"
+                  echo "body_max_width=$body_max_width"
+                fi
               } > "$key_file"
               cache_key_line=$(md5sum "$key_file")
               cache_key=''${cache_key_line%% *}
@@ -413,14 +415,28 @@ EOF
               cache_html=$cache_entry/document.html
               cache_pdf=$cache_entry/document.pdf
               cache_image=$cache_entry/document.png
+              cache_pages=$cache_entry/pages
+              pages_dir=$tmp/pages
+              pages=()
 
               render_document() {
                 local page_prefix
-                page_prefix=$tmp/page
 
                 if [ "$input_type" = pdf ]; then
                   cp "$md" "$pdf"
+                  mkdir -p "$pages_dir"
+                  page_prefix=$pages_dir/page
+                  pdftoppm \
+                    -png \
+                    -scale-to-x "$width" \
+                    -scale-to-y -1 \
+                    "$pdf" \
+                    "$page_prefix" \
+                    >/dev/null
+
+                  mapfile -t pages < <(find "$pages_dir" -maxdepth 1 -name 'page-*.png' -print | sort -V)
                 else
+                  page_prefix=$tmp/page
                   pandoc \
                     --from markdown+smart \
                     --to html5 \
@@ -435,16 +451,19 @@ EOF
                     "$md"
 
                   weasyprint --quiet "$html" "$pdf" >/dev/null
-                fi
-                pdftoppm -png -r 180 "$pdf" "$page_prefix" >/dev/null
+                  pdftoppm -png -r 180 "$pdf" "$page_prefix" >/dev/null
 
-                mapfile -t pages < <(find "$tmp" -maxdepth 1 -name 'page-*.png' -print | sort -V)
+                  mapfile -t pages < <(find "$tmp" -maxdepth 1 -name 'page-*.png' -print | sort -V)
+                fi
+
                 if [ "''${#pages[@]}" -eq 0 ]; then
                   echo "mdkitty: no pages were rendered" >&2
                   exit 1
                 fi
 
-                magick "''${pages[@]}" -append -resize "$width"x "$image"
+                if [ "$input_type" = markdown ]; then
+                  magick "''${pages[@]}" -append -resize "$width"x "$image"
+                fi
               }
 
               prune_cache() {
@@ -461,29 +480,52 @@ EOF
                     done
               }
 
-              if [ "$cache" -eq 1 ] \
-                && [ -s "$cache_pdf" ] \
-                && [ -s "$cache_image" ] \
-                && { [ "$input_type" = pdf ] || [ -s "$cache_html" ]; }; then
-                if [ "$input_type" = markdown ]; then
+              cache_hit=0
+              if [ "$cache" -eq 1 ]; then
+                if [ "$input_type" = pdf ] \
+                  && [ -s "$cache_pdf" ] \
+                  && [ -e "$cache_pages/.complete" ]; then
+                  mapfile -t pages < <(find "$cache_pages" -maxdepth 1 -name 'page-*.png' -print | sort -V)
+                  if [ "''${#pages[@]}" -gt 0 ]; then
+                    cache_hit=1
+                    pdf=$cache_pdf
+                  fi
+                elif [ "$input_type" = markdown ] \
+                  && [ -s "$cache_html" ] \
+                  && [ -s "$cache_pdf" ] \
+                  && [ -s "$cache_image" ]; then
+                  cache_hit=1
                   html=$cache_html
+                  pdf=$cache_pdf
+                  image=$cache_image
                 fi
-                pdf=$cache_pdf
-                image=$cache_image
-                touch "$cache_entry" "$cache_pdf" "$cache_image" 2>/dev/null || true
+              fi
+
+              if [ "$cache_hit" -eq 1 ]; then
+                touch "$cache_entry" "$pdf" 2>/dev/null || true
+                if [ "$input_type" = pdf ]; then
+                  touch "''${pages[@]}" 2>/dev/null || true
+                else
+                  touch "$html" "$image" 2>/dev/null || true
+                fi
               else
                 render_document
                 if [ "$cache" -eq 1 ]; then
                   mkdir -p "$cache_entry"
                   if [ "$input_type" = markdown ]; then
                     cp "$html" "$cache_html"
+                    cp "$image" "$cache_image"
                     html=$cache_html
+                    image=$cache_image
+                  else
+                    mkdir -p "$cache_pages"
+                    cp "''${pages[@]}" "$cache_pages/"
+                    touch "$cache_pages/.complete"
+                    mapfile -t pages < <(find "$cache_pages" -maxdepth 1 -name 'page-*.png' -print | sort -V)
                   fi
                   cp "$pdf" "$cache_pdf"
-                  cp "$image" "$cache_image"
                   prune_cache
                   pdf=$cache_pdf
-                  image=$cache_image
                 fi
               fi
 
@@ -491,9 +533,13 @@ EOF
                 mkdir -p "$out_dir"
                 if [ "$input_type" = markdown ]; then
                   cp "$html" "$out_dir/document.html"
+                  cp "$image" "$out_dir/document.png"
+                elif [ "''${#pages[@]}" -eq 1 ]; then
+                  cp "''${pages[0]}" "$out_dir/document.png"
+                else
+                  magick "''${pages[@]}" -append "$out_dir/document.png"
                 fi
                 cp "$pdf" "$out_dir/document.pdf"
-                cp "$image" "$out_dir/document.png"
               fi
 
               open_pdf() {
@@ -661,16 +707,29 @@ EOF
               }
 
               emit_pager_stream() {
-                split_image_for_pager | while IFS= read -r strip; do
-                  emit_kitty_stream 1 0 "$strip"
-                done
+                if [ "$input_type" = pdf ]; then
+                  emit_kitty_stream 1 1 "''${pages[@]}"
+                else
+                  split_image_for_pager | while IFS= read -r strip; do
+                    emit_kitty_stream 1 0 "$strip"
+                  done
+                fi
+              }
+
+              emit_document_stream() {
+                if [ "$input_type" = pdf ]; then
+                  emit_kitty_stream 0 1 "''${pages[@]}"
+                else
+                  emit_kitty_stream 0 1
+                fi
               }
 
               pager_transcript_cache_path() {
                 local key_file key_line key
                 key_file=$tmp/pager-cache-key
                 {
-                  echo "mdkitty-pager-cache-v1"
+                  echo "mdkitty-pager-cache-v2"
+                  echo "input_type=$input_type"
                   echo "window=$MDKITTY_WINDOW_SIZE"
                   echo "overlap=''${MDKITTY_PAGER_OVERLAP_PX:-0}"
                 } > "$key_file"
@@ -681,7 +740,7 @@ EOF
 
               case "$mode" in
                 view)
-                  emit_kitty_stream 0 1
+                  emit_document_stream
                   if [ -n "$out_dir" ]; then
                     echo "Saved render artifacts to $out_dir" >&2
                   fi
@@ -715,7 +774,7 @@ EOF
                   fi
                   ;;
                 stdout)
-                  emit_kitty_stream 0 1
+                  emit_document_stream
                   ;;
               esac
             '';
